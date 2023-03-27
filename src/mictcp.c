@@ -20,7 +20,8 @@ int mic_tcp_socket(start_mode sm)
     }
     set_loss_rate(0);
 
-    sockets[id_socket] = { .fd = id_socket, .state = IDLE };
+    sockets[id_socket].fd = id_socket;
+    sockets[id_socket].state = IDLE;
     
     return id_socket++;
 }
@@ -73,10 +74,11 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    mic_tcp_pdu pdu = { .header.source_port = mic_sock.addr.port,
-                         .header.destination_port = dest_addr.port,
-                         .payload.data = mesg,
-                         .payload.size = mesg_size };
+    mic_tcp_pdu pdu;
+    pdu.header.source_port = sockets[mic_sock].addr.port;
+    pdu.header.dest_port = dest_addr.port;
+    pdu.payload.data = mesg;
+    pdu.payload.size = mesg_size;
 
     return IP_send(pdu, dest_addr);
 }
@@ -119,5 +121,5 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    app_buffer_put(pdu.paylaod);
+    app_buffer_put(pdu.payload);
 }
