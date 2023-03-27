@@ -63,6 +63,28 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     dest_addr.ip_addr = addr.ip_addr;
     dest_addr.port = addr.port;
 
+    mic_tcp_pdu pdu;
+    pdu.header.source_port = sockets[socket].addr.port;
+    pdu.header.dest_port = dest_addr.port;
+    pdu.header.syn = 1;
+
+    IP_send(pdu,dest_addr);
+    sockets[socket].state = SYN_SENT;
+
+    mic_tcp_pdu pdu_recv;
+    mic_tcp_sock_addr addr_recv;
+
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    while (result == -1 
+            || pdu_recv.header.syn == 0 
+            || pdu_recv.header.ack == 0
+            ) {
+        IP_send(pdu,dest_addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+    }
+
+    
+
     return 0;
 }
 
