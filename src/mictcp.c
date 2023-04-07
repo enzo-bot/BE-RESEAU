@@ -6,7 +6,15 @@
 int id_socket = 0;
 mic_tcp_sock sockets[NB_SOCKETS];
 
+// Adresse de destination
 mic_tcp_sock_addr dest_addr;
+
+// Numéros de séquence et d'acquittement
+int num_seq = 0;
+int num_ack = 0;
+
+// PDU d'acquittement stocké
+mic_tcp_pdu acquittement;
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -49,9 +57,41 @@ int mic_tcp_bind(int socket, mic_tcp_sock_addr addr)
 int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
-    /*
-    attente syn    
-    */
+
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv;
+    mic_tcp_sock_addr addr_recv;
+
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    int cpt = 0;
+
+    //Attente de SYN
+    while ((result == -1 
+            || pdu_recv.header.syn == 0) && (cpt < 10)) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
+    }
+    if (cpt == 10) return -1;
+
+    // Envoi du SYN ACK
+    pdu.header.syn = 1;
+    pdu.header.ack = 1;
+
+    IP_send(pdu,addr);
+
+    //Attente de ACK
+    while ((result == -1 
+            || pdu_recv.header.ack == 0) && (cpt < 10)) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
+    }
+    if (cpt == 10) return -1;
+    
     return 0;
 }
 
@@ -63,33 +103,44 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
 
+    // Sauvegarde de l'adresse de connexion
     dest_addr.ip_addr = addr.ip_addr;
     dest_addr.port = addr.port;
 
+    // Initialisation du PDU SYN
     mic_tcp_pdu pdu;
     pdu.header.source_port = sockets[socket].addr.port;
     pdu.header.dest_port = dest_addr.port;
     pdu.header.syn = 1;
 
+    // Envoi du PDU SYN
     IP_send(pdu,dest_addr);
     sockets[socket].state = SYN_SENT;
 
+    // Définition du PDU en réception
     mic_tcp_pdu pdu_recv;
     mic_tcp_sock_addr addr_recv;
 
+    // Attente du PDU + activation du Timer
     int result = IP_recv(&pdu_recv, &addr_recv, 5);
     int cpt = 0;
     while ((result == -1 
             || pdu_recv.header.syn == 0 
             || pdu_recv.header.ack == 0) && (cpt < 10)
             ) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
         IP_send(pdu,dest_addr);
         result = IP_recv(&pdu_recv, &addr_recv, 5);
         cpt++;
     }
+    // Si on réalise la boucle 10 fois, on arrête la fonction
     if (cpt == 10) return -1;
 
-    
+    // Envoi du ACK
+    pdu.header.syn = 0;
+    pdu.header.ack = 1;
+
+    IP_send(pdu,dest_addr);
 
     return 0;
 }
@@ -102,13 +153,36 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
+    // Construction du PDU à envoyer
     mic_tcp_pdu pdu;
     pdu.header.source_port = sockets[mic_sock].addr.port;
     pdu.header.dest_port = dest_addr.port;
+    pdu.header.seq_num = num_seq;
     pdu.payload.data = mesg;
     pdu.payload.size = mesg_size;
 
-    return IP_send(pdu, dest_addr);
+    num_seq += 1%2;
+
+    // Activation du timer
+    IP_send(pdu, dest_addr);
+    
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv;
+    mic_tcp_sock_addr addr_recv;
+
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    int cpt = 0;
+    while ((result == -1 || pdu_recv.header.ack == 0) && (cpt < 10)) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,dest_addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
+    }
+    // Si on réalise la boucle 10 fois, on arrête la fonction
+    if (cpt == 10) return -1;
+    
+    return 0;
 }
 
 /*
@@ -120,6 +194,7 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
+    
     int delivered_size = -1;
     mic_tcp_payload payload;
     payload.data = mesg;
@@ -136,6 +211,7 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
 int mic_tcp_close (int socket)
 {
     printf("[MIC-TCP] Appel de la fonction :  "); printf(__FUNCTION__); printf("\n");
+
     return 0;
 }
 
@@ -149,5 +225,67 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    app_buffer_put(pdu.payload);
+    // Dans le cas ou le PDU est un ACK / SYN / FIN ...
+    // je vois pas ce qu'on doit faire
+    
+    // Le client reçoit un ACK
+    if (pdu.header.ack == 1 
+        && pdu.header.syn == 0
+        && pdu.header.fin == 0) {
+        
+        
+    }
+
+    // Le client reçoit un SYN-ACK
+    if (pdu.header.ack == 1 
+        && pdu.header.syn == 1
+        && pdu.header.fin == 0) {
+
+    }
+
+    // Le client reçoit un FIN-ACK
+    if (pdu.header.ack == 1 
+        && pdu.header.syn == 0
+        && pdu.header.fin == 1) {
+
+    }
+    
+
+    // Dans le cas ou les flags du PDU sont tous a 0
+    // On met à jour les num de sequence et d'acquittement
+    // On met le message dans le buffer
+    if (pdu.header.ack == 0 
+        && pdu.header.syn == 0
+        && pdu.header.fin == 0) {
+
+        if (num_ack == pdu.header.seq_num) {
+            acquittement.header.source_port = sockets[mic_sock].addr.port;
+            acquittement.header.dest_port = addr.port;
+            acquittement.header.ack_num = pdu.header.seq_num;
+
+            (num_ack += 1)%2;
+            
+            app_buffer_put(pdu.payload);
+        }
+        
+        if (!(acquittement == NULL)) {
+            IP_send(acquittement, addr);
+        }
+    }
+
+    // Le serveur reçoit un SYN
+    if (pdu.header.ack == 1 
+        && pdu.header.syn == 0
+        && pdu.header.fin == 1) {
+
+    }
+
+    // Le serveur reçoit un FIN
+    if (pdu.header.ack == 1 
+        && pdu.header.syn == 0
+        && pdu.header.fin == 1) {
+
+    }
+
+    
 }
