@@ -62,7 +62,7 @@ int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
-    
+
     dest_addr.ip_addr = addr.ip_addr;
     dest_addr.port = addr.port;
 
@@ -78,13 +78,16 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     mic_tcp_sock_addr addr_recv;
 
     int result = IP_recv(&pdu_recv, &addr_recv, 5);
-    while (result == -1 
+    int cpt = 0;
+    while ((result == -1 
             || pdu_recv.header.syn == 0 
-            || pdu_recv.header.ack == 0
+            || pdu_recv.header.ack == 0) && (cpt < 10)
             ) {
         IP_send(pdu,dest_addr);
         result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
     }
+    if (cpt == 10) return -1;
 
     
 
