@@ -27,7 +27,7 @@ vpath %.c $(SRC_DIR)
 
 define make-goal
 $1/%.o: %.c
-	$(CC) -DAPI_CS_Port=$(PORT) -DAPI_SC_Port=$(PORT2) -std=gnu99 -Wall -g -I $(INCLUDES) -c $$< -o $$@
+	$(CC) -DAPI_CS_Port=$(PORT) -DAPI_SC_Port=$(PORT2) -std=gnu99 -Wall -Wextra -g -I $(INCLUDES) -c $$< -o $$@
 endef
 
 .PHONY: all checkdirs clean
