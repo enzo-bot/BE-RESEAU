@@ -14,7 +14,7 @@ int num_seq = 0;
 int num_ack = 0;
 
 // PDU d'acquittement stocké
-mic_tcp_pdu acquittement;
+mic_tcp_pdu acquittement = {0};
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -26,7 +26,7 @@ int mic_tcp_socket(start_mode sm)
     if(initialize_components(sm) == -1) { /* Appel obligatoire */
         return -1;
     }
-    set_loss_rate(0);
+    set_loss_rate(15);
 
     sockets[id_socket].fd = id_socket;
     sockets[id_socket].state = IDLE;
@@ -159,30 +159,32 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     pdu.header.source_port = sockets[mic_sock].addr.port;
     pdu.header.dest_port = dest_addr.port;
     pdu.header.seq_num = num_seq;
+    pdu.header.ack = 0;
+    pdu.header.syn = 0;
+    pdu.header.fin = 0;
     pdu.payload.data = mesg;
     pdu.payload.size = mesg_size;
 
     // Envoi du PDU
-    IP_send(pdu, dest_addr);
+    int octets = IP_send(pdu, dest_addr);
 
     // Définition du PDU en réception
-    mic_tcp_pdu pdu_recv;
-    mic_tcp_sock_addr addr_recv;
+    mic_tcp_pdu pdu_recv = {0};
+    mic_tcp_sock_addr addr_recv = {0};
 
     // Attente du PDU + activation du Timer
     int result = IP_recv(&pdu_recv, &addr_recv, 5);
-    int cpt = 0;
-    while ((result == -1 || (pdu_recv.header.ack == 0 && pdu_recv.header.ack_num != num_seq)) && (cpt < 10)
-            ) {
-        // Renvoi du PDU à l'expiration du Timer (only 10 times)
-        IP_send(pdu,dest_addr);
+    while ((result == -1 || 
+            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
+
+        // Renvoi du PDU à l'expiration du Timer
+        octets = IP_send(pdu,dest_addr);
         result = IP_recv(&pdu_recv, &addr_recv, 5);
-        cpt++;
     }
-    // Si on réalise la boucle 10 fois, on arrête la fonction
-    if (cpt == 10) return -1;
+
+    num_seq = (num_seq + 1)%2;
     
-    return 0;
+    return octets;
 }
 
 /*
@@ -198,13 +200,12 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
     int delivered_size = -1;
 
     // Récupération du payload depuis le buffer du socket
-    mic_tcp_payload payload;
+    mic_tcp_payload payload = {0};
     payload.size = max_mesg_size;
-    delivered_size = app_buffer_get(payload);
-    
+    payload.data = mesg;
+    delivered_size = app_buffer_get(payload);   
+
     // Retour du message à l'application
-    mesg = payload.data;
-    
     return delivered_size;
 }
 
@@ -230,35 +231,6 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    // Le client reçoit un ACK
-    if (pdu.header.ack == 1 
-        && pdu.header.syn == 0
-        && pdu.header.fin == 0) {
-        
-        if ((sockets[0].state == ACK_WAITING) && (pdu.header.ack_num == num_seq)) {
-            sockets[0].state = ACK_RECEIVED;
-            num_seq = (num_seq + 1)%2;
-        }
-    }
-
-    // Le client reçoit un SYN-ACK
-    if (pdu.header.ack == 1 
-        && pdu.header.syn == 1
-        && pdu.header.fin == 0) {
-
-        sockets[0].state = SYNACK_RECEIVED;
-
-    }
-
-    // Le client reçoit un FIN-ACK
-    if (pdu.header.ack == 1 
-        && pdu.header.syn == 0
-        && pdu.header.fin == 1) {
-
-        sockets[0].state = FINACK_RECEIVED;
-
-    }
-    
     /*  
     *   Le serveur reçoit un message
     *   On met à jour les numéros de séquence et d'acquittement
@@ -268,13 +240,12 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
         && pdu.header.syn == 0
         && pdu.header.fin == 0) {
 
-        printf("message recu, bonne boucle\n");
-
         if (num_ack == pdu.header.seq_num) {
             acquittement.header.source_port = sockets[0].addr.port;
             acquittement.header.dest_port = addr.port;
+            acquittement.header.ack = 1;
             acquittement.header.ack_num = pdu.header.seq_num;
-
+            
             num_ack = (num_ack + 1)%2;
             
             app_buffer_put(pdu.payload);
