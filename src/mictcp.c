@@ -154,31 +154,33 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    if (sockets[0].state == IDLE ||
-        sockets[0].state == ESTABLISHED ||
-        sockets[0].state == ACK_RECEIVED) {
-        
-        // Construction du PDU à envoyer
-        mic_tcp_pdu pdu;
-        pdu.header.source_port = sockets[mic_sock].addr.port;
-        pdu.header.dest_port = dest_addr.port;
-        pdu.header.seq_num = num_seq;
-        pdu.payload.data = mesg;
-        pdu.payload.size = mesg_size;
+    // Construction du PDU à envoyer
+    mic_tcp_pdu pdu;
+    pdu.header.source_port = sockets[mic_sock].addr.port;
+    pdu.header.dest_port = dest_addr.port;
+    pdu.header.seq_num = num_seq;
+    pdu.payload.data = mesg;
+    pdu.payload.size = mesg_size;
 
-        // Envoi du PDU
-        IP_send(pdu, dest_addr);
+    // Envoi du PDU
+    IP_send(pdu, dest_addr);
 
-        sockets[0].state = ACK_WAITING;
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv;
+    mic_tcp_sock_addr addr_recv;
 
-        int cpt = 0;
-        while ((sockets[0].state != ACK_RECEIVED)) {
-            // Renvoi du PDU à l'expiration du Timer (only 10 times)
-            IP_send(pdu,dest_addr);
-        }
-    } else {
-        return -1;
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    int cpt = 0;
+    while ((result == -1 || (pdu_recv.header.ack == 0 && pdu_recv.header.ack_num != num_seq)) && (cpt < 10)
+            ) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,dest_addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
     }
+    // Si on réalise la boucle 10 fois, on arrête la fonction
+    if (cpt == 10) return -1;
     
     return 0;
 }
@@ -215,7 +217,7 @@ int mic_tcp_close (int socket)
 {
     printf("[MIC-TCP] Appel de la fonction :  "); printf(__FUNCTION__); printf("\n");
 
-    return -1;
+    return 0;
 }
 
 /*
@@ -226,7 +228,7 @@ int mic_tcp_close (int socket)
  */
 void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 {
-    //printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
+    printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
     // Le client reçoit un ACK
     if (pdu.header.ack == 1 
