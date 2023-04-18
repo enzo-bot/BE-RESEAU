@@ -1,6 +1,7 @@
 #include <mictcp.h>
 #include <api/mictcp_core.h>
 #include <pthread.h>
+#include <stdio.h>
 
 #define NB_SOCKETS 32
 #define BUFFER_CIRC_LEN 10
@@ -23,6 +24,7 @@ mic_tcp_pdu acquittement = {0};
 
 // Taux de pertes admissible
 double pertes_admiss = 10.0;
+double pertes_admiss_serv[2] = {10.0,25.0}; //plage de valeurs des pertes admiss par le serveur
 
 // Tableau circulaire pour le calcul du taux de perte
 int buffer_circ[BUFFER_CIRC_LEN] = {1,1,1,1,1,1,1,1,1,1};
@@ -132,6 +134,9 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     pdu.header.source_port = sockets[socket].addr.port;
     pdu.header.dest_port = dest_addr.port;
     pdu.header.syn = 1;
+    char * envoi;
+    sprintf(envoi, "%.2lf", pertes_admiss);
+    pdu.payload.data = envoi;
 
     // Envoi du PDU SYN
     IP_send(pdu,dest_addr);
@@ -145,10 +150,11 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     while ((result == -1
             || pdu_recv.header.syn == 0 
             || pdu_recv.header.ack == 0)) {
-        // Renvoi du PDU à l'expiration du Timer (only 10 times)
         IP_send(pdu,dest_addr);
         result = IP_recv(&pdu_recv, &addr_recv, 5);
     }
+
+    pertes_admiss = (double)pdu_recv.payload.data;
 
     // Envoi du ACK
     pdu.header.syn = 0;
@@ -296,6 +302,20 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
         // Envoi du SYN ACK
         pdu_syn_ack.header.syn = 1;
         pdu_syn_ack.header.ack = 1;
+
+        // Négociation du % de pertes
+        if (*(double*)pdu.payload.data > pertes_admiss_serv[0]
+            && *(double*)pdu.payload.data < pertes_admiss_serv[1]) {
+            pdu_syn_ack.payload.data = pdu.payload.data;
+        } else if (*(double*)pdu.payload.data < pertes_admiss_serv[0]){
+            char * envoi;
+            sprintf(envoi, "%.2lf", pertes_admiss_serv[0]);
+            pdu_syn_ack.payload.data = envoi;
+        } else if(*(double*)pdu.payload.data > pertes_admiss_serv[1]){
+            char * envoi;
+            sprintf(envoi, "%.2lf", pertes_admiss_serv[1]);
+            pdu_syn_ack.payload.data = envoi;
+        }
 
         IP_send(pdu_syn_ack,addr);
         int result = IP_recv(&pdu_recv, &addr_recv, 5);
