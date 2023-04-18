@@ -2,6 +2,12 @@
 #include <api/mictcp_core.h>
 
 #define NB_SOCKETS 32
+#define BUFFER_CIRC_LEN 10
+
+
+double perte_actuelle();
+
+void actualise_buffer(int code);
 
 int id_socket = 0;
 mic_tcp_sock sockets[NB_SOCKETS];
@@ -16,6 +22,13 @@ int num_ack = 0;
 // PDU d'acquittement stocké
 mic_tcp_pdu acquittement = {0};
 
+
+// Taux de pertes admissible
+double pertes_admiss = 10.0;
+
+// Tableau circulaire pour le calcul du taux de perte
+int buffer_circ[BUFFER_CIRC_LEN] = {1,1,1,1,1,1,1,1,1,1};
+
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
  * Retourne le descripteur du socket ou bien -1 en cas d'erreur
@@ -26,7 +39,7 @@ int mic_tcp_socket(start_mode sm)
     if(initialize_components(sm) == -1) { /* Appel obligatoire */
         return -1;
     }
-    set_loss_rate(15);
+    set_loss_rate(10);
 
     sockets[id_socket].fd = id_socket;
     sockets[id_socket].state = IDLE;
@@ -125,7 +138,7 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     // Attente du PDU + activation du Timer
     int result = IP_recv(&pdu_recv, &addr_recv, 5);
     int cpt = 0;
-    while ((result == -1 
+    while ((result == -1 nb_paquets_traites
             || pdu_recv.header.syn == 0 
             || pdu_recv.header.ack == 0) && (cpt < 10)
             ) {
@@ -174,12 +187,26 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 
     // Attente du PDU + activation du Timer
     int result = IP_recv(&pdu_recv, &addr_recv, 5);
-    while ((result == -1 || 
-            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
 
-        // Renvoi du PDU à l'expiration du Timer
-        octets = IP_send(pdu,dest_addr);
-        result = IP_recv(&pdu_recv, &addr_recv, 5);
+    // Vérification si le PDU a été perdu
+    if ((result == -1 || 
+            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
+        
+        actualise_buffer(0);
+
+        // Vérification si la perte est admissible ou pas
+        if ((perte_actuelle()> pertes_admiss)) {
+
+            while ((result == -1 || 
+            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
+                // Renvoi du PDU à l'expiration du Timer
+                octets = IP_send(pdu,dest_addr);
+                result = IP_recv(&pdu_recv, &addr_recv, 5);
+            }
+
+            buffer_circ[0] = 1;
+        }
+        
     }
 
     num_seq = (num_seq + 1)%2;
@@ -273,4 +300,22 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     }
 
     
+}
+
+double perte_actuelle() {
+    int nb_zeros = 0;
+    for (int i=0 ; i<BUFFER_CIRC_LEN ; i++) {
+        if (buffer_circ[i] == 0) {
+            nb_zeros += 1;
+        }
+    }
+
+    return nb_zeros/BUFFER_CIRC_LEN*100;
+}
+
+void actualise_buffer(int code) {
+    for (int i=0 ; i<BUFFER_CIRC_LEN-1 ; i++) {
+        buffer_circ[i+1]=buffer_circ[i];
+    }
+    buffer_circ[0]=code;
 }
