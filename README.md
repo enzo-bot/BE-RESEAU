@@ -58,7 +58,7 @@ Pour répercuter les changements que vous faites sur votre répertoire de travai
     git commit -m «un message décrivant la mise à jour»
     git push
 
-- Marquage des versions successives de votre travail sur mictcp 
+- Marquage des versions successives de votre travail sur mictcp Document sans titre
  
 Lorsque vous le souhaitez, git permet d'associer une étiquette à un état précis de votre dépôt par l'intermédiaires de tags. Il vous est par exemple possible d'utiliser ce mécanisme pour marquer (et par conséquence pouvoir retrouver) l'état de votre dépôt pour chacune des versions successives de votre travail sur mictcp.
 

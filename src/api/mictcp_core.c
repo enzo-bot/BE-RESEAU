@@ -284,8 +284,6 @@ void app_buffer_put(mic_tcp_payload bf)
     pthread_cond_broadcast(&buffer_empty_cond);
 }
 
-
-
 void* listening(void* arg)
 {
     mic_tcp_pdu pdu_tmp;
