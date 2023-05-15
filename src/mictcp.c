@@ -7,10 +7,10 @@
 #define NB_SOCKETS 32
 #define BUFFER_CIRC_LEN 10
 
-void buffer_put(mic_tcp_payload bf);
-int buffer_get(mic_tcp_payload buff);
+void buffer_put(mic_tcp_pdu bf);
+int buffer_get(mic_tcp_pdu buff);
 
-void* process_sent_PDU(void * arg/*int mic_sock*/);
+void* process_sent_PDU(void * arg);
 
 double perte_actuelle();
 void actualise_buffer(int code);
@@ -46,7 +46,7 @@ pthread_t send_th;
 TAILQ_HEAD(tailhead, buffer_entry) buffer_head;
 struct tailhead *headp;
 struct buffer_entry {
-     mic_tcp_payload bf;
+     mic_tcp_pdu bf;
      TAILQ_ENTRY(buffer_entry) entries;
 };
 pthread_mutex_t lock;
@@ -77,7 +77,6 @@ int mic_tcp_socket(start_mode sm)
 
     sockets[id_socket].fd = id_socket;
     sockets[id_socket].state = IDLE;
-    
     return id_socket++;
 }
 
@@ -132,38 +131,49 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     pdu.header.source_port = sockets[socket].addr.port;
     pdu.header.dest_port = dest_addr.port;
     pdu.header.syn = 1;
+    pdu.header.ack = 0;
+    pdu.header.fin = 0;
     char * envoi = malloc(sizeof(char)*5);
     sprintf(envoi, "%.2lf", pertes_admiss);
     pdu.payload.data = envoi;
     pdu.payload.size = strlen(envoi);
 
-    // Envoi du PDU SYN
-    IP_send(pdu,dest_addr);
+    buffer_put(pdu);
 
-    // Définition du PDU en réception
-    mic_tcp_pdu pdu_recv = {0};
-    char pointeur_tmp[8];
-    pdu_recv.payload.data = pointeur_tmp;
-    pdu_recv.payload.size = strlen(pointeur_tmp);
-    mic_tcp_sock_addr addr_recv = {0};
-
-    // Attente du PDU + activation du Timer
-    int result = IP_recv(&pdu_recv, &addr_recv, 5);
-    while ((result == -1
-            || pdu_recv.header.syn == 0 
-            || pdu_recv.header.ack == 0)) {
-        IP_send(pdu,dest_addr);
-        result = IP_recv(&pdu_recv, &addr_recv, 5);
+    while(sockets[0].state != ESTABLISHED) {
+        if (pthread_cond_wait(&cond, &mutex) != 0) {
+            printf("Erreur de l'attente de la condition\n");
+            exit(1);
+        }
     }
 
-    double value_perte = atof(pdu_recv.payload.data);
-    pertes_admiss = value_perte;
+    // // Envoi du PDU SYN
+    // IP_send(pdu,dest_addr);
 
-    // Envoi du ACK
-    pdu.header.syn = 0;
-    pdu.header.ack = 1;
+    // // Définition du PDU en réception
+    // mic_tcp_pdu pdu_recv = {0};
+    // char pointeur_tmp[8];
+    // pdu_recv.payload.data = pointeur_tmp;
+    // pdu_recv.payload.size = strlen(pointeur_tmp);
+    // mic_tcp_sock_addr addr_recv = {0};
 
-    IP_send(pdu,dest_addr);
+    // // Attente du PDU + activation du Timer
+    // int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    // while ((result == -1
+    //         || pdu_recv.header.syn == 0 
+    //         || pdu_recv.header.ack == 0)) {
+    //     IP_send(pdu,dest_addr);
+    //     result = IP_recv(&pdu_recv, &addr_recv, 5);
+    // }
+
+    //double value_perte = atof(pdu_recv.payload.data);
+    //pertes_admiss = value_perte;
+
+    // // Envoi du ACK
+    // pdu.header.syn = 0;
+    // pdu.header.ack = 1;
+
+    // IP_send(pdu,dest_addr);
 
     return 0;
 }
@@ -185,9 +195,9 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     payload.data = mesg;
     payload.size = mesg_size;
 
-    buffer_put(payload);
+    //buffer_put(payload);
 
-    /*
+    
     // Construction du PDU à envoyer
     mic_tcp_pdu pdu = {0};
     pdu.header.source_port = sockets[mic_sock].addr.port;
@@ -199,6 +209,8 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     pdu.payload.data = mesg;
     pdu.payload.size = mesg_size;
 
+    buffer_put(pdu);
+    /*
     // Envoi du PDU
     int octets = IP_send(pdu, dest_addr);
 
@@ -286,6 +298,10 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     *   On met à jour les numéros de séquence et d'acquittement
     *   On met le message dans le buffer
     */
+
+
+    printf("ack : %d syn : %d fin : %d\n",pdu.header.ack, pdu.header.syn, pdu.header.fin);
+
     if (pdu.header.ack == 0 
         && pdu.header.syn == 0
         && pdu.header.fin == 0) {
@@ -312,6 +328,8 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
         && pdu.header.fin == 0) {
 
         sockets[0].state = SYN_RECEIVED;
+
+        printf("ok\n");
 
         mic_tcp_pdu pdu_recv = {0};
         mic_tcp_sock_addr addr_recv = {0};
@@ -385,13 +403,23 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     }
 }
 
-void buffer_put(mic_tcp_payload bf)
+void buffer_put(mic_tcp_pdu bf)
 {
     /* Prepare a buffer entry to store the data */
     struct buffer_entry * entry = malloc(sizeof(struct buffer_entry));
-    entry->bf.size = bf.size;
-    entry->bf.data = malloc(bf.size);
-    memcpy(entry->bf.data, bf.data, bf.size);
+
+    memcpy(entry->bf.header.syn, bf.header.syn, NULL);
+
+    entry->bf.header.source_port = bf.header.source_port;
+    entry->bf.header.dest_port = bf.header.dest_port;
+    entry->bf.header.seq_num = bf.header.seq_num;
+    entry->bf.header.ack = bf.header.ack;
+    //entry->bf.header.syn = bf.header.syn;
+    entry->bf.header.fin = bf.header.fin;
+
+    entry->bf.payload.size = bf.payload.size;
+    entry->bf.payload.data = malloc(bf.payload.size);
+    memcpy(entry->bf.payload.data, bf.payload.data, bf.payload.size);
 
     /* Lock a mutex to protect the buffer from corruption */
     pthread_mutex_lock(&lock);
@@ -407,7 +435,7 @@ void buffer_put(mic_tcp_payload bf)
     pthread_cond_broadcast(&buffer_empty_cond);
 }
 
-int buffer_get(mic_tcp_payload buff)
+int buffer_get(mic_tcp_pdu buff)
 {
     /* A pointer to a buffer entry */
     struct buffer_entry * entry;
@@ -432,10 +460,22 @@ int buffer_get(mic_tcp_payload buff)
     entry = buffer_head.tqh_first;
 
     /* How much data are we going to deliver to the application ? */
-    result = min_size(entry->bf.size, buff.size);
+    result = min_size(entry->bf.payload.size, buff.payload.size);
+
+
+    memcpy(buff.header.syn, entry->bf.header.syn, NULL);
+    //printf("value syn : %d\n", entry->bf.header.syn);
+
+    buff.header.source_port = entry->bf.header.source_port;
+    buff.header.dest_port = entry->bf.header.dest_port;
+    buff.header.seq_num = entry->bf.header.seq_num;
+    buff.header.ack = entry->bf.header.ack;
+    //buff.header.syn = entry->bf.header.syn;
+    buff.header.fin = entry->bf.header.fin;
+    buff.payload.size = entry->bf.payload.size;
 
     /* We copy the actual data in the application allocated buffer */
-    memcpy(buff.data, entry->bf.data, result);
+    memcpy(buff.payload.data, entry->bf.payload.data, result);
 
     /* We remove the entry from the buffer */
     TAILQ_REMOVE(&buffer_head, entry, entries);
@@ -444,7 +484,7 @@ int buffer_get(mic_tcp_payload buff)
     pthread_mutex_unlock(&lock);
 
     /* Clean up memory */
-    free(entry->bf.data);
+    free(entry->bf.payload.data);
     free(entry);
 
     return result;
@@ -457,24 +497,17 @@ int buffer_get(mic_tcp_payload buff)
  */
 void* process_sent_PDU(void * arg)
 {
-    while(1) 
+    while(1)
     {
         // Construction du PDU à envoyer
         mic_tcp_pdu pdu = {0};
-        pdu.header.source_port = sockets[0].addr.port;
-        pdu.header.dest_port = dest_addr.port;
-        pdu.header.seq_num = num_seq;
-        pdu.header.ack = 0;
-        pdu.header.syn = 0;
-        pdu.header.fin = 0;
 
-        char tab[10];
-        pdu.payload.data = tab;
+        //char tab[10];
+        //pdu.payload.data = tab;
 
-        buffer_get(pdu.payload);
+        buffer_get(pdu);
 
-        //  PROBLEME !!!!
-        printf("%s\n",pdu.payload.data);
+        printf("valeur syn : %d\n",pdu.header.syn);
 
         // Envoi du PDU
         IP_send(pdu, dest_addr);
@@ -485,6 +518,58 @@ void* process_sent_PDU(void * arg)
 
         // Attente du PDU + activation du Timer
         int result = IP_recv(&pdu_recv, &addr_recv, 5);
+
+
+        // Traitement du PDU si c'est un SYN
+        if(pdu.header.syn == 1
+            && pdu.header.ack == 0
+            && pdu.header.fin == 0) {
+
+            printf("le pdu est un syn\n");
+            
+            // Envoi du PDU SYN
+            IP_send(pdu,dest_addr);
+
+            // Définition du PDU en réception
+            mic_tcp_pdu pdu_recv = {0};
+            char pointeur_tmp[8];
+            pdu_recv.payload.data = pointeur_tmp;
+            pdu_recv.payload.size = strlen(pointeur_tmp);
+            mic_tcp_sock_addr addr_recv = {0};
+
+            // Attente du PDU + activation du Timer
+            int result = IP_recv(&pdu_recv, &addr_recv, 5);
+            while ((result == -1
+                    || pdu_recv.header.syn == 0 
+                    || pdu_recv.header.ack == 0)) {
+                IP_send(pdu,dest_addr);
+                result = IP_recv(&pdu_recv, &addr_recv, 5);
+            }
+
+            double value_perte = atof(pdu_recv.payload.data);
+            pertes_admiss = value_perte;
+
+            // Envoi du ACK
+            pdu.header.syn = 0;
+            pdu.header.ack = 1;
+
+            IP_send(pdu,dest_addr);
+
+            // Signal pour la condition
+            if (pthread_mutex_lock(&mutex) != 0) {
+                printf("erreur de lock du mutex\n");
+                exit(1);
+            }
+            sockets[0].state = ESTABLISHED;
+            if (pthread_cond_signal(&cond) != 0) {
+                printf("Erreur de l'envoi du signal\n");
+                exit(1);
+            }
+            if (pthread_mutex_unlock(&mutex) != 0) {
+                printf("erreur de unlock du mutex\n");
+                exit(1);
+            }
+        }
 
         // Vérification si le PDU a été perdu
         if ((result == -1 || 
@@ -502,9 +587,11 @@ void* process_sent_PDU(void * arg)
                     result = IP_recv(&pdu_recv, &addr_recv, 5);
                 }
 
-                buffer_circ[0] = 1;
+                
             }
         }
+        
+        actualise_buffer(1);
 
         num_seq = (num_seq + 1)%2;
 
