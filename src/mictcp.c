@@ -169,7 +169,6 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
     mic_tcp_pdu pdu = {0};
     pdu.header.source_port = sockets[mic_sock].addr.port;
     pdu.header.dest_port = dest_addr.port;
-    pdu.header.seq_num = num_seq;
     pdu.header.ack = 0;
     pdu.header.syn = 0;
     pdu.header.fin = 0;
@@ -335,7 +334,6 @@ void buffer_put(mic_tcp_pdu bf)
 
     entry->bf.header.source_port = bf.header.source_port;
     entry->bf.header.dest_port = bf.header.dest_port;
-    entry->bf.header.seq_num = bf.header.seq_num;
     entry->bf.header.ack = bf.header.ack;
     entry->bf.header.syn = bf.header.syn;
     entry->bf.header.fin = bf.header.fin;
@@ -384,7 +382,6 @@ int buffer_get(mic_tcp_pdu* buff)
     
     buff->header.source_port = entry->bf.header.source_port;
     buff->header.dest_port = entry->bf.header.dest_port;
-    buff->header.seq_num = entry->bf.header.seq_num;
     buff->header.ack = entry->bf.header.ack;
     buff->header.syn = entry->bf.header.syn;
     buff->header.fin = entry->bf.header.fin;
@@ -472,6 +469,8 @@ void* process_sent_PDU(void * arg)
                 exit(1);
             }
         } else {
+
+            pdu.header.seq_num = num_seq;
 
             // Envoi du PDU
             IP_send(pdu, dest_addr);
