@@ -1,0 +1,17 @@
+Explications complémentaires
+
+Implémentation de MICTCP-v1 et v2
+L’objectif de ces version est d’inclure une garantie de fiabilité totale (v1) via un mécanisme de reprise des pertes de type « Stop and  Wait » (v2). 
+On à implémenté le stop and wait dans v2 avec une boucle while dans mic_tcp_send() : tant que l’émetteur n’a pas reçu d’acquittement de la part du récepteur et que le numéro d’acquittement est égal au numéro de séquence, le PDU est renvoyé à l’expiration du timer. Lorsqu’on sort de la boucle, le PDU à bien été reçu et on met à jour le numéro de séquence.
+
+Implémentation de MICTCP-v3
+L’objectif de cette version est d’étendre la phase de transfert de données MICTCP-v2  de sorte à inclure : une garantie de fiabilité partielle « statique » via un mécanisme de reprise des pertes de type « Stop and Wait » à fiabilité partielle « pré câblée », i.e. dont le % de pertes admissibles est défini de façon statique avec pertes_admiss.
+Pour ce faire, nous avons décidé de calculer le taux de perte sur une fenêtre glissante. On a implémenté ce mécanisme à l’aide d’un buffer circulaire buffer_circ que l’on a initialisé à 1. Si on détecte qu’un PDU est perdu, alors on met à jour le tableau circulaire à l’aide de la fonction actualise_buffer(). Si le résultat calculé par la fonction perte_actuelle() est supérieur à pertes_admiss, on n’admet pas la perte et on renvoie le PDU jusqu’à ce qu’il soit bien reçu.
+
+Implémentation de MICTCP-v4 
+L’objectif de la version v4.1 est d’étendre la phase de transfert de données MICTCP-v3  de sorte à inclure : 
+une phase d’établissement de connexion
+une garantie de fiabilité partielle via un mécanisme de reprise des pertes de type « Stop and Wait » dont le % de pertes admissibles sera négocié durant la phase d’établissement de connexion
+Pour négocier les pertes admissibles durant la phase d’établissement de la connexion, le client propose un taux de pertes admissible pertes_admiss. Le serveur possède une plage de valeurs de pertes admissibles pertes_admiss_serv. La phase de négociation se fait dans la fonction process_received_PDU() : si la valeur proposée par le client est dans la plage de valeurs du serveur, on retient cette valeur; si la valeur est inférieur à la borne inf du serveur on retient la borne inf; et si la valeur est supérieur à la borne sup du serveur on retient la borne sup.
+
+La consigne pour la version v4.2 était d’implémenter l’asynchronisme entre MICTCP et les applications émettrices et réceptrices. Comme cet aspect était déjà implémenté pour le serveur, nous avons réalisé le même asynchronisme adapté pour la partie client. On retrouve donc dans mictcp.c l’initialisation d’un thread qui appelle la fonction process_sent_pdu(). Cette fonction réalise une boucle infinie pour envoyer les PDU qui sont stockés au fur et à mesure dans le buffer. Ce buffer est une nouvelle implémentation permettant de faire passer des PDU entiers entre les fonctions mictcp_connect() / mictcp_send() et process_sent_PDU(). Les nouvelles fonctions buffer_put() et buffer_get() utilisent la librairie sys/queue.h pour faciliter l’initialisation et l’utilisation du buffer. La gestion de la connexion est désormais gérée dans cette dernière fonction et un signal permet de faire attendre la fonction connect de manière passive.
