@@ -2,15 +2,9 @@
 #include <api/mictcp_core.h>
 #include <pthread.h>
 #include <stdio.h>
-#include <sys/queue.h>
 
 #define NB_SOCKETS 32
 #define BUFFER_CIRC_LEN 10
-
-void buffer_put(mic_tcp_pdu bf);
-int buffer_get(mic_tcp_pdu* buff);
-
-void* process_sent_PDU(void * arg);
 
 double perte_actuelle();
 void actualise_buffer(int code);
@@ -35,24 +29,9 @@ double pertes_admiss_serv[2] = {10.0,25.0}; //plage de valeurs des pertes admiss
 // Tableau circulaire pour le calcul du taux de perte
 int buffer_circ[BUFFER_CIRC_LEN] = {1,1,1,1,1,1,1,1,1,1};
 
-// Mutex et condition pour les fonctions accept et connect
+// Mutex et condition pour la fonction accept
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-
-// Numéro du thread Client
-pthread_t send_th;
-
-// Pour le buffer client
-TAILQ_HEAD(tailhead, buffer_entry) buffer_head;
-//struct tailhead *headp;
-struct buffer_entry {
-     mic_tcp_pdu bf;
-     TAILQ_ENTRY(buffer_entry) entries;
-};
-pthread_mutex_t lock_buf;
-
-/* Variable pour l'attente passive quand le buffer est vide */
-pthread_cond_t buff_empty_cond;
 
 /*
  * Permet de créer un socket entre l’application et MIC-TCP
@@ -66,19 +45,9 @@ int mic_tcp_socket(start_mode sm)
     }
     set_loss_rate(10);
 
-    pthread_cond_init(&buff_empty_cond, 0);
-
-    //Verifier que le mode est CLIENT et lancer la fonction
-    // qui gere l'asynchronisme
-
-    if(sm == CLIENT)
-    {
-        TAILQ_INIT(&buffer_head);
-        pthread_create(&send_th, NULL, process_sent_PDU, "1");
-    }
-
     sockets[id_socket].fd = id_socket;
     sockets[id_socket].state = IDLE;
+    
     return id_socket++;
 }
 
@@ -94,8 +63,6 @@ int mic_tcp_bind(int socket, mic_tcp_sock_addr addr)
 
     addr.port = socket;
     sockets[socket].addr = addr;
-
-    return 0;
 }
 
 /*
@@ -105,6 +72,40 @@ int mic_tcp_bind(int socket, mic_tcp_sock_addr addr)
 int mic_tcp_accept(int socket, mic_tcp_sock_addr* addr)
 {
     printf("[MIC-TCP] Appel de la fonction: ");  printf(__FUNCTION__); printf("\n");
+    /*
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv;
+    mic_tcp_sock_addr addr_recv;
+
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    int cpt = 0;
+
+    //Attente de SYN
+    while ((result == -1 
+            || pdu_recv.header.syn == 0) && (cpt < 10)) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
+    }
+    if (cpt == 10) return -1;
+
+    // Envoi du SYN ACK
+    pdu.header.syn = 1;
+    pdu.header.ack = 1;
+
+    IP_send(pdu,addr);
+
+    //Attente de ACK
+    while ((result == -1 
+            || pdu_recv.header.ack == 0) && (cpt < 10)) {
+        // Renvoi du PDU à l'expiration du Timer (only 10 times)
+        IP_send(pdu,addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
+        cpt++;
+    }
+    if (cpt == 10) return -1; */
 
     while(sockets[0].state != ESTABLISHED) {
         if (pthread_cond_wait(&cond, &mutex) != 0) {
@@ -133,22 +134,39 @@ int mic_tcp_connect(int socket, mic_tcp_sock_addr addr)
     pdu.header.source_port = sockets[socket].addr.port;
     pdu.header.dest_port = dest_addr.port;
     pdu.header.syn = 1;
-    pdu.header.ack = 0;
-    pdu.header.fin = 0;
     char * envoi = malloc(sizeof(char)*5);
     sprintf(envoi, "%.2lf", pertes_admiss);
     pdu.payload.data = envoi;
     pdu.payload.size = strlen(envoi);
 
-    buffer_put(pdu);
+    // Envoi du PDU SYN
+    IP_send(pdu,dest_addr);
 
-    while(sockets[0].state != ESTABLISHED) {
-        if (pthread_cond_wait(&cond, &mutex) != 0) {
-            printf("Erreur de l'attente de la condition\n");
-            exit(1);
-        }
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv = {0};
+    char pointeur_tmp[8];
+    pdu_recv.payload.data = pointeur_tmp;
+    pdu_recv.payload.size = strlen(pointeur_tmp);
+    mic_tcp_sock_addr addr_recv = {0};
+
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+    while ((result == -1
+            || pdu_recv.header.syn == 0 
+            || pdu_recv.header.ack == 0)) {
+        IP_send(pdu,dest_addr);
+        result = IP_recv(&pdu_recv, &addr_recv, 5);
     }
-    
+
+    double value_perte = atof(pdu_recv.payload.data);
+    pertes_admiss = value_perte;
+
+    // Envoi du ACK
+    pdu.header.syn = 0;
+    pdu.header.ack = 1;
+
+    IP_send(pdu,dest_addr);
+
     return 0;
 }
 
@@ -160,24 +178,51 @@ int mic_tcp_send (int mic_sock, char* mesg, int mesg_size)
 {
     printf("[MIC-TCP] Appel de la fonction: "); printf(__FUNCTION__); printf("\n");
     
-    // Au lieu d'envoyer directement les PDU, on veut utiliser appbufferget/put
-    // Comme l'asynchronisme est deja implementé dans le code du serveur,
-    // on decice de l'implementer aussi pour le client en utilisant le buffer
-    // a notre disposition
-    
     // Construction du PDU à envoyer
     mic_tcp_pdu pdu = {0};
     pdu.header.source_port = sockets[mic_sock].addr.port;
     pdu.header.dest_port = dest_addr.port;
+    pdu.header.seq_num = num_seq;
     pdu.header.ack = 0;
     pdu.header.syn = 0;
     pdu.header.fin = 0;
     pdu.payload.data = mesg;
     pdu.payload.size = mesg_size;
 
-    buffer_put(pdu);
+    // Envoi du PDU
+    int octets = IP_send(pdu, dest_addr);
+
+    // Définition du PDU en réception
+    mic_tcp_pdu pdu_recv = {0};
+    mic_tcp_sock_addr addr_recv = {0};
+
+    // Attente du PDU + activation du Timer
+    int result = IP_recv(&pdu_recv, &addr_recv, 5);
+
+    // Vérification si le PDU a été perdu
+    if ((result == -1 || 
+            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
+        
+        actualise_buffer(0);
+
+        // Vérification si la perte est admissible ou pas
+        if ((perte_actuelle()> pertes_admiss)) {
+
+            while ((result == -1 || 
+            (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
+                // Renvoi du PDU à l'expiration du Timer
+                octets = IP_send(pdu,dest_addr);
+                result = IP_recv(&pdu_recv, &addr_recv, 5);
+            }
+
+            buffer_circ[0] = 1;
+        }
+        
+    }
+
+    num_seq = (num_seq + 1)%2;
     
-    return mesg_size;;
+    return octets;
 }
 
 /*
@@ -194,8 +239,8 @@ int mic_tcp_recv (int socket, char* mesg, int max_mesg_size)
 
     // Récupération du payload depuis le buffer du socket
     mic_tcp_payload payload = {0};
-    payload.data = mesg;
     payload.size = max_mesg_size;
+    payload.data = mesg;
     delivered_size = app_buffer_get(payload);   
 
     // Retour du message à l'application
@@ -229,7 +274,6 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
     *   On met à jour les numéros de séquence et d'acquittement
     *   On met le message dans le buffer
     */
-
     if (pdu.header.ack == 0 
         && pdu.header.syn == 0
         && pdu.header.fin == 0) {
@@ -293,6 +337,7 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
 
         }
 
+
         IP_send(pdu_syn_ack,addr);
         int result = IP_recv(&pdu_recv, &addr_recv, 5);
         
@@ -325,196 +370,11 @@ void process_received_PDU(mic_tcp_pdu pdu, mic_tcp_sock_addr addr)
         && pdu.header.fin == 1) {
 
     }
-}
 
-void buffer_put(mic_tcp_pdu bf)
-{
-    /* Prepare a buffer entry to store the data */
-    struct buffer_entry * entry = malloc(sizeof(struct buffer_entry));
-
-    entry->bf.header.source_port = bf.header.source_port;
-    entry->bf.header.dest_port = bf.header.dest_port;
-    entry->bf.header.ack = bf.header.ack;
-    entry->bf.header.syn = bf.header.syn;
-    entry->bf.header.fin = bf.header.fin;
-
-    entry->bf.payload.size = strlen(bf.payload.data);
-    entry->bf.payload.data = malloc(entry->bf.payload.size*sizeof(char));
-    strcpy(entry->bf.payload.data, bf.payload.data);
-
-    /* Lock a mutex to protect the buffer from corruption */
-    pthread_mutex_lock(&lock_buf);
-
-    /* Insert the packet in the buffer, at the end of it */
-    TAILQ_INSERT_TAIL(&buffer_head, entry, entries);
-
-    /* Release the mutex */
-    pthread_mutex_unlock(&lock_buf);
-
-    /* We can now signal to any potential thread waiting that the buffer is
-       no longer empty */
-    pthread_cond_broadcast(&buff_empty_cond);
-}
-
-int buffer_get(mic_tcp_pdu* buff)
-{
-    /* A pointer to a buffer entry */
-    struct buffer_entry * entry;
-
-    /* The actual size passed to the application */
-    int result = 0;
-
-    /* Lock a mutex to protect the buffer from corruption */
-    pthread_mutex_lock(&lock_buf);
-
-    /* If the buffer is empty, we wait for insertion */
-    while(buffer_head.tqh_first == NULL) {
-          pthread_cond_wait(&buff_empty_cond, &lock_buf);
-    }
-
-    /* When we execute the code below, the following conditions are true:
-       - The buffer contains at least 1 element
-       - We hold the lock on the mutex
-    */
-
-    /* The entry we want is the first one in the buffer */
-    entry = buffer_head.tqh_first;
     
-    buff->header.source_port = entry->bf.header.source_port;
-    buff->header.dest_port = entry->bf.header.dest_port;
-    buff->header.ack = entry->bf.header.ack;
-    buff->header.syn = entry->bf.header.syn;
-    buff->header.fin = entry->bf.header.fin;
-    buff->payload.size = entry->bf.payload.size;
-
-    /* We copy the actual data in the application allocated buffer */
-    buff->payload.data = malloc(strlen(entry->bf.payload.data));
-    strcpy(buff->payload.data, entry->bf.payload.data);
-
-    /* We remove the entry from the buffer */
-    TAILQ_REMOVE(&buffer_head, entry, entries);
-
-    /* Release the mutex */
-    pthread_mutex_unlock(&lock_buf);
-
-    /* Clean up memory */
-    free(entry->bf.payload.data);
-    free(entry);
-
-    return result;
 }
 
-/*
- * Création d’un PDU MIC-TCP à envoyer (mise à jour des numéros de séquence
- * et d'acquittement, etc.) avec les données utiles depuis le buffer d'envoi
- * du socket. Cette fonction utilise la fonction buffer_get().
- */
-void* process_sent_PDU(void * arg)
-{
-    while(1)
-    {
-        // Construction du PDU à envoyer
-        mic_tcp_pdu pdu = {0};
-
-        //char tab[500];
-        //pdu.payload.data = tab;
-
-        buffer_get(&pdu);
-
-        // Traitement du PDU si c'est un SYN
-        if(pdu.header.syn == 1
-            && pdu.header.ack == 0
-            && pdu.header.fin == 0) {
-            
-            // Envoi du PDU SYN
-            IP_send(pdu,dest_addr);
-
-            // Définition du PDU en réception
-            mic_tcp_pdu pdu_recv = {0};
-            char pointeur_tmp[8];
-            pdu_recv.payload.data = pointeur_tmp;
-            pdu_recv.payload.size = strlen(pointeur_tmp);
-            mic_tcp_sock_addr addr_recv = {0};
-
-            // Attente du PDU + activation du Timer
-            int result = IP_recv(&pdu_recv, &addr_recv, 5);
-            while ((result == -1
-                    || pdu_recv.header.syn == 0 
-                    || pdu_recv.header.ack == 0)) {
-                IP_send(pdu,dest_addr);
-                result = IP_recv(&pdu_recv, &addr_recv, 5);
-            }
-
-            double value_perte = atof(pdu_recv.payload.data);
-            pertes_admiss = value_perte;
-
-            // Envoi du ACK
-            pdu.header.syn = 0;
-            pdu.header.ack = 1;
-
-            IP_send(pdu,dest_addr);
-
-            // Signal pour la condition
-            if (pthread_mutex_lock(&mutex) != 0) {
-                printf("erreur de lock du mutex\n");
-                exit(1);
-            }
-            sockets[0].state = ESTABLISHED;
-            if (pthread_cond_signal(&cond) != 0) {
-                printf("Erreur de l'envoi du signal\n");
-                exit(1);
-            }
-            if (pthread_mutex_unlock(&mutex) != 0) {
-                printf("erreur de unlock du mutex\n");
-                exit(1);
-            }
-        } else {
-
-            pdu.header.seq_num = num_seq;
-
-            // Envoi du PDU
-            IP_send(pdu, dest_addr);
-
-            // Définition du PDU en réception
-            mic_tcp_pdu pdu_recv = {0};
-            mic_tcp_sock_addr addr_recv = {0};
-
-            // Attente du PDU + activation du Timer
-            int result = IP_recv(&pdu_recv, &addr_recv, 5);
-
-            // Vérification si le PDU a été perdu
-            if ((result == -1 || 
-                    (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
-                
-                actualise_buffer(0);
-
-                // Vérification si la perte est admissible ou pas
-                if ((perte_actuelle()> pertes_admiss)) {
-
-                    while ((result == -1 || 
-                    (pdu_recv.header.ack != 1 && pdu_recv.header.ack_num != num_seq))) {
-                        // Renvoi du PDU à l'expiration du Timer
-                        IP_send(pdu,dest_addr);
-                        result = IP_recv(&pdu_recv, &addr_recv, 5);
-                    }
-
-                    
-                }
-            }
-            
-            actualise_buffer(1);
-
-            num_seq = (num_seq + 1)%2;
-        }
-    }
-
-}
-
-/*
- * Renvoie le taux de perte actuel en lisant le buffer circulaire
- */
-double perte_actuelle() 
-{
+double perte_actuelle() {
     int nb_zeros = 0;
     for (int i=0 ; i<BUFFER_CIRC_LEN ; i++) {
         if (buffer_circ[i] == 0) {
@@ -525,12 +385,7 @@ double perte_actuelle()
     return nb_zeros/BUFFER_CIRC_LEN*100;
 }
 
-/*
- * Ajoute dans le buffer le statut de l'envoi du précédent PDU
- * Le statut sera un 0 si le PDU a été perdu, sinon 1
- */
-void actualise_buffer(int code) 
-{
+void actualise_buffer(int code) {
     for (int i=0 ; i<BUFFER_CIRC_LEN-1 ; i++) {
         buffer_circ[i+1]=buffer_circ[i];
     }
